@@ -2,7 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "todo.items.v1";
-  const APP_VERSION = "v1.1"; // app.js + sw.js(CACHE) 함께 올림. 이후 0.1씩 증가
+  const APP_VERSION = "v1.2"; // app.js + sw.js(CACHE) 함께 올림. 이후 0.1씩 증가
 
   const listEl = document.getElementById("list");
   const emptyEl = document.getElementById("empty");
@@ -272,7 +272,7 @@
     handle.type = "button";
     handle.setAttribute("aria-label", "순서 변경");
     handle.innerHTML =
-      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8h16M4 16h16"/></svg>';
+      '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
 
     row.append(check, main, edit, handle);
     li.append(trash, row);
@@ -386,30 +386,61 @@
   function enableDrag(handle, li) {
     // 핸들 터치가 카드 스와이프(삭제)로 번지지 않게 차단
     handle.addEventListener("touchstart", function (e) { e.stopPropagation(); }, { passive: true });
+
     handle.addEventListener("pointerdown", function (e) {
       if (e.button != null && e.button > 0) return;
       e.preventDefault();
       try { handle.setPointerCapture(e.pointerId); } catch (err) {}
       isDragging = true;
+      document.body.classList.add("dragging-active");
       li.classList.add("dragging");
 
-      function move(ev) {
-        const y = ev.clientY;
-        const sibs = Array.prototype.slice
+      let startY = e.clientY; // 손가락-카드 기준점 (재배치 때 보정)
+      li.style.transition = "none";
+
+      function siblings() {
+        return Array.prototype.slice
           .call(listEl.querySelectorAll(".todo-item:not(.done)"))
           .filter(function (x) { return x !== li; });
-        let placed = false;
+      }
+
+      // 드래그 카드는 손가락을 그대로 따라온다
+      function follow(y) {
+        li.style.transform = "translateY(" + (y - startY) + "px)";
+      }
+
+      // DOM 순서를 바꾸되: 드래그 카드는 화면상 그대로 두고(startY 보정),
+      // 밀려나는 카드는 FLIP으로 부드럽게 이동시킨다
+      function reinsert(reference) {
+        const sibs = siblings();
+        const before = sibs.map(function (s) { return s.getBoundingClientRect().top; });
+        const dBefore = li.getBoundingClientRect().top;
+        listEl.insertBefore(li, reference);
+        const dAfter = li.getBoundingClientRect().top;
+        startY += dAfter - dBefore; // 드래그 카드의 시각적 위치 유지
+        sibs.forEach(function (s, i) {
+          const delta = before[i] - s.getBoundingClientRect().top;
+          if (!delta) return;
+          s.style.transition = "none";
+          s.style.transform = "translateY(" + delta + "px)";
+          s.getBoundingClientRect(); // 강제 reflow
+          s.style.transition = "transform 0.18s ease";
+          s.style.transform = "";
+        });
+      }
+
+      function move(ev) {
+        follow(ev.clientY);
+        const r0 = li.getBoundingClientRect();
+        const center = r0.top + r0.height / 2;
+        const sibs = siblings();
         for (let i = 0; i < sibs.length; i++) {
-          const r = sibs[i].getBoundingClientRect();
-          if (y < r.top + r.height / 2) {
-            if (sibs[i].previousElementSibling !== li) listEl.insertBefore(li, sibs[i]);
-            placed = true;
-            break;
-          }
-        }
-        if (!placed && sibs.length) {
-          const last = sibs[sibs.length - 1];
-          if (last.nextElementSibling !== li) listEl.insertBefore(li, last.nextElementSibling);
+          const s = sibs[i];
+          const r = s.getBoundingClientRect();
+          const mid = r.top + r.height / 2;
+          const after = !!(li.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING);
+          if (after && center > mid) { reinsert(s.nextSibling); break; }
+          if (!after && center < mid) { reinsert(s); break; }
         }
       }
 
@@ -418,15 +449,16 @@
         handle.removeEventListener("pointerup", up);
         handle.removeEventListener("pointercancel", up);
         try { handle.releasePointerCapture(ev.pointerId); } catch (err) {}
+        li.style.transition = "";
+        li.style.transform = "";
         li.classList.remove("dragging");
+        document.body.classList.remove("dragging-active");
+        siblings().forEach(function (s) { s.style.transition = ""; s.style.transform = ""; });
         // 현재 DOM 순서대로 order 재배정
         const ids = Array.prototype.slice
           .call(listEl.querySelectorAll(".todo-item:not(.done)"))
           .map(function (x) { return x.dataset.id; });
-        ids.forEach(function (id, idx) {
-          const t = find(id);
-          if (t) t.order = idx;
-        });
+        ids.forEach(function (id, idx) { const t = find(id); if (t) t.order = idx; });
         save();
         isDragging = false;
         render();

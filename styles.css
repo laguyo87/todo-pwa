@@ -620,16 +620,24 @@ body {
 }
 .todo-icon:active { background: var(--surface-2); color: var(--accent); }
 .todo-icon.hidden { display: none; }
-.todo-handle { cursor: grab; touch-action: none; }
+.todo-handle { cursor: grab; touch-action: none; color: var(--text-faint); }
+.todo-handle:active { cursor: grabbing; }
 
 /* ---------- Dragging ---------- */
-.todo-item.dragging { animation: none; }
-.todo-item.dragging .todo-row {
-  background: var(--surface-2);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
-  transform: scale(1.02);
-  transition: none;
+.todo-item.dragging {
+  animation: none;
+  position: relative;
+  z-index: 20;
 }
+.todo-item.dragging .todo-row {
+  background: var(--surface);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+  transform: scale(1.03);
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+.todo-item.dragging .todo-handle { color: var(--accent); }
+/* 드래그 중에는 스와이프 차단 보조 */
+body.dragging-active { cursor: grabbing; }
 
 /* ---------- Bulk bar ---------- */
 .bulk-bar {
