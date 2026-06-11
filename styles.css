@@ -636,8 +636,10 @@ body {
   transition: box-shadow 0.15s, transform 0.15s;
 }
 .todo-item.dragging .todo-handle { color: var(--accent); }
-/* 드래그 중에는 스와이프 차단 보조 */
+/* 드래그 중에는 스와이프 차단 보조 + 합성 힌트로 부드럽게 */
 body.dragging-active { cursor: grabbing; }
+body.dragging-active .todo-item:not(.done) { will-change: transform; }
+body.dragging-active .todo-row { transition: none; }
 
 /* ---------- Bulk bar ---------- */
 .bulk-bar {

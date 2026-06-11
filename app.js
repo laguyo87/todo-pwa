@@ -2,7 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "todo.items.v1";
-  const APP_VERSION = "v1.2"; // app.js + sw.js(CACHE) 함께 올림. 이후 0.1씩 증가
+  const APP_VERSION = "v1.3"; // app.js + sw.js(CACHE) 함께 올림. 이후 0.1씩 증가
 
   const listEl = document.getElementById("list");
   const emptyEl = document.getElementById("empty");
@@ -397,6 +397,13 @@
 
       let startY = e.clientY; // 손가락-카드 기준점 (재배치 때 보정)
       li.style.transition = "none";
+      li.style.willChange = "transform";
+      // 손가락과 카드 중심의 고정 간격 → 매 프레임 DOM을 읽지 않고 중심 계산
+      const r0 = li.getBoundingClientRect();
+      const pointerOffset = e.clientY - (r0.top + r0.height / 2);
+
+      let latestY = e.clientY;
+      let rafId = null;
 
       function siblings() {
         return Array.prototype.slice
@@ -404,9 +411,9 @@
           .filter(function (x) { return x !== li; });
       }
 
-      // 드래그 카드는 손가락을 그대로 따라온다
+      // 드래그 카드는 손가락을 그대로 따라온다 (GPU 합성 유도)
       function follow(y) {
-        li.style.transform = "translateY(" + (y - startY) + "px)";
+        li.style.transform = "translate3d(0," + (y - startY) + "px,0)";
       }
 
       // DOM 순서를 바꾸되: 드래그 카드는 화면상 그대로 두고(startY 보정),
@@ -422,17 +429,18 @@
           const delta = before[i] - s.getBoundingClientRect().top;
           if (!delta) return;
           s.style.transition = "none";
-          s.style.transform = "translateY(" + delta + "px)";
+          s.style.transform = "translate3d(0," + delta + "px,0)";
           s.getBoundingClientRect(); // 강제 reflow
-          s.style.transition = "transform 0.18s ease";
+          s.style.transition = "transform 0.2s cubic-bezier(0.2,0.7,0.3,1)";
           s.style.transform = "";
         });
       }
 
-      function move(ev) {
-        follow(ev.clientY);
-        const r0 = li.getBoundingClientRect();
-        const center = r0.top + r0.height / 2;
+      // 프레임당 한 번만 처리 (레이아웃 thrash 방지 → 부드러움)
+      function frame() {
+        rafId = null;
+        follow(latestY);
+        const center = latestY - pointerOffset; // DOM 측정 없이 중심 추정
         const sibs = siblings();
         for (let i = 0; i < sibs.length; i++) {
           const s = sibs[i];
@@ -444,24 +452,44 @@
         }
       }
 
+      function move(ev) {
+        latestY = ev.clientY;
+        if (rafId === null) rafId = requestAnimationFrame(frame);
+      }
+
       function up(ev) {
         handle.removeEventListener("pointermove", move);
         handle.removeEventListener("pointerup", up);
         handle.removeEventListener("pointercancel", up);
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
         try { handle.releasePointerCapture(ev.pointerId); } catch (err) {}
-        li.style.transition = "";
-        li.style.transform = "";
-        li.classList.remove("dragging");
-        document.body.classList.remove("dragging-active");
-        siblings().forEach(function (s) { s.style.transition = ""; s.style.transform = ""; });
-        // 현재 DOM 순서대로 order 재배정
+
+        // 데이터(order)는 지금 확정해 저장
         const ids = Array.prototype.slice
           .call(listEl.querySelectorAll(".todo-item:not(.done)"))
           .map(function (x) { return x.dataset.id; });
         ids.forEach(function (id, idx) { const t = find(id); if (t) t.order = idx; });
         save();
-        isDragging = false;
-        render();
+        document.body.classList.remove("dragging-active");
+
+        // 제자리로 부드럽게 안착시킨 뒤 정리 (render는 애니메이션 후로 미룸)
+        li.style.transition = "transform 0.2s cubic-bezier(0.2,0.7,0.3,1)";
+        li.style.transform = "";
+
+        let done = false;
+        function settle() {
+          if (done) return;
+          done = true;
+          li.removeEventListener("transitionend", settle);
+          li.style.transition = "";
+          li.style.willChange = "";
+          li.classList.remove("dragging");
+          siblings().forEach(function (s) { s.style.transition = ""; s.style.transform = ""; });
+          isDragging = false;
+          render();
+        }
+        li.addEventListener("transitionend", settle, { once: true });
+        setTimeout(settle, 260); // 변화가 없어 transitionend가 안 와도 안전하게 마무리
       }
 
       handle.addEventListener("pointermove", move);
