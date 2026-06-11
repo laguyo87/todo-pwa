@@ -402,6 +402,50 @@ body {
   color: var(--danger);
 }
 
+/* ---------- Update pill ---------- */
+.update-pill {
+  position: fixed;
+  top: calc(var(--safe-top) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 22px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  animation: drop-in 0.28s cubic-bezier(0.2, 0.8, 0.3, 1.2);
+}
+
+.update-pill[hidden] {
+  display: none;
+}
+
+.update-pill:active {
+  transform: translateX(-50%) scale(0.95);
+}
+
+.update-pill.loading svg {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes drop-in {
+  from { opacity: 0; transform: translate(-50%, -16px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ---------- Version label ---------- */
 .app-version {
   text-align: center;

@@ -1,5 +1,5 @@
-const CACHE = "todo-pwa-v4";
-const VERSION = CACHE.replace("todo-pwa-", ""); // "v4"
+const CACHE = "todo-pwa-v5";
+const VERSION = CACHE.replace("todo-pwa-", ""); // "v5"
 const ASSETS = [
   "./",
   "./index.html",
@@ -12,10 +12,12 @@ const ASSETS = [
 
 // Pre-cache the app shell on install
 self.addEventListener("install", (event) => {
+  // Pre-cache, but do NOT skipWaiting here — the new worker waits until the
+  // user taps "업데이트" (page posts "skipWaiting"). First install (no existing
+  // controller) still activates immediately.
   event.waitUntil(
     caches.open(CACHE).then((cache) => cache.addAll(ASSETS))
   );
-  self.skipWaiting();
 });
 
 // Clean up old caches on activate
@@ -28,10 +30,15 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Report the running version when the page asks
+// Page <-> worker messages
 self.addEventListener("message", (event) => {
+  // report the running version
   if (event.data === "version" && event.source) {
     event.source.postMessage({ type: "version", version: VERSION });
+  }
+  // user tapped "업데이트" -> activate this waiting worker now
+  if (event.data === "skipWaiting") {
+    self.skipWaiting();
   }
 });
 

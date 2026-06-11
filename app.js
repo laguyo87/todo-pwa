@@ -2,7 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "todo.items.v1";
-  const APP_VERSION = "v4"; // 이 HTML/JS 묶음의 버전 (sw.js CACHE와 함께 올림)
+  const APP_VERSION = "v5"; // 이 HTML/JS 묶음의 버전 (sw.js CACHE와 함께 올림)
 
   const listEl = document.getElementById("list");
   const emptyEl = document.getElementById("empty");
@@ -465,13 +465,42 @@
 
   showVersion(null); // 우선 화면 버전 표시
 
-  /* ---------- Service worker ---------- */
+  /* ---------- Service worker + 업데이트 알림 ---------- */
+  const updateBtn = document.getElementById("updateBtn");
+  const updateLabel = updateBtn ? updateBtn.querySelector(".update-label") : null;
+  let waitingWorker = null;
+
+  function askVersion() {
+    const ctrl = navigator.serviceWorker.controller;
+    if (ctrl) ctrl.postMessage("version");
+  }
+
+  // 새 버전이 설치되어 대기 중일 때 알림 버튼을 띄운다
+  function offerUpdate(worker) {
+    if (!worker) return;
+    waitingWorker = worker;
+    if (updateBtn) updateBtn.hidden = false;
+  }
+
+  if (updateBtn) {
+    updateBtn.addEventListener("click", function () {
+      if (!waitingWorker) return;
+      updateBtn.disabled = true;
+      updateBtn.classList.add("loading");
+      if (updateLabel) updateLabel.textContent = "업데이트 중…";
+      // 새 워커가 제어권을 잡는 순간 새로고침해서 새 버전을 로드한다
+      navigator.serviceWorker.addEventListener(
+        "controllerchange",
+        function () {
+          window.location.reload();
+        },
+        { once: true }
+      );
+      waitingWorker.postMessage("skipWaiting"); // 대기 워커 즉시 활성화 요청
+    });
+  }
+
   if ("serviceWorker" in navigator) {
-    // 제어 중인 워커에게 실제 버전을 물어본다
-    function askVersion() {
-      const ctrl = navigator.serviceWorker.controller;
-      if (ctrl) ctrl.postMessage("version");
-    }
     navigator.serviceWorker.addEventListener("message", function (e) {
       if (e.data && e.data.type === "version") showVersion(e.data.version);
     });
@@ -479,11 +508,34 @@
     window.addEventListener("load", function () {
       navigator.serviceWorker
         .register("sw.js")
-        .then(askVersion)
+        .then(function (reg) {
+          askVersion();
+
+          // 이미 설치돼 대기 중인 새 워커가 있으면 즉시 안내
+          if (reg.waiting && navigator.serviceWorker.controller) {
+            offerUpdate(reg.waiting);
+          }
+
+          // 새 워커가 설치되는 것을 감지
+          reg.addEventListener("updatefound", function () {
+            const nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener("statechange", function () {
+              // 설치 완료 + 기존 제어 워커 존재 = 업데이트 대기 상태
+              if (nw.state === "installed" && navigator.serviceWorker.controller) {
+                offerUpdate(nw);
+              }
+            });
+          });
+
+          // 앱을 다시 볼 때마다 서버에 새 버전이 있는지 확인
+          document.addEventListener("visibilitychange", function () {
+            if (document.visibilityState === "visible") {
+              reg.update().catch(function () {});
+            }
+          });
+        })
         .catch(function () {});
     });
-    // 새 워커가 제어권을 넘겨받으면 다시 물어본다
-    navigator.serviceWorker.addEventListener("controllerchange", askVersion);
-    askVersion();
   }
 })();
