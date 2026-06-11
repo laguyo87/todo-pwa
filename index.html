@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#4f7cff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="할일" />
+  <title>할일</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1 class="app-title">할일</h1>
+    <p class="app-count" id="count">남은 할일 0개</p>
+  </header>
+
+  <main class="app-main">
+    <ul class="todo-list" id="list"></ul>
+    <div class="empty-state" id="empty" hidden>
+      <div class="empty-emoji">📝</div>
+      <p>할일이 없어요</p>
+      <span>아래에서 새 할일을 추가해 보세요</span>
+    </div>
+  </main>
+
+  <form class="composer" id="form" autocomplete="off">
+    <input
+      class="composer-input"
+      id="input"
+      type="text"
+      inputmode="text"
+      enterkeyhint="done"
+      placeholder="할일을 입력하세요"
+      aria-label="할일 입력"
+      maxlength="200"
+    />
+    <button class="composer-add" id="add" type="submit" aria-label="추가">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+      </svg>
+    </button>
+  </form>
+
+  <script src="app.js"></script>
+</body>
+</html>
