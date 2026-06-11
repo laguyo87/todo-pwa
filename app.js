@@ -2,7 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "todo.items.v1";
-  const APP_VERSION = "v5"; // 이 HTML/JS 묶음의 버전 (sw.js CACHE와 함께 올림)
+  const APP_VERSION = "v1.0"; // 이 HTML/JS 묶음의 버전 (sw.js CACHE와 함께 올림). 이후 0.1씩 증가
 
   const listEl = document.getElementById("list");
   const emptyEl = document.getElementById("empty");
