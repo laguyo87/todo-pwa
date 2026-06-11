@@ -2,7 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "todo.items.v1";
-  const APP_VERSION = "v3"; // 이 HTML/JS 묶음의 버전 (sw.js CACHE와 함께 올림)
+  const APP_VERSION = "v4"; // 이 HTML/JS 묶음의 버전 (sw.js CACHE와 함께 올림)
 
   const listEl = document.getElementById("list");
   const emptyEl = document.getElementById("empty");
@@ -213,6 +213,233 @@
     add(inputEl.value);
     inputEl.value = "";
     inputEl.focus();
+  });
+
+  /* ---------- Backup: export / import ---------- */
+  const sheetEl = document.getElementById("sheet");
+  const sheetTitleEl = document.getElementById("sheetTitle");
+  const sheetHintEl = document.getElementById("sheetHint");
+  const sheetTextEl = document.getElementById("sheetText");
+  const sheetStatusEl = document.getElementById("sheetStatus");
+  const sheetActionsEl = document.getElementById("sheetActions");
+  const fileInputEl = document.getElementById("fileInput");
+
+  function makeBtn(label, cls, onClick) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sheet-btn" + (cls ? " " + cls : "");
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function setStatus(msg, isError) {
+    sheetStatusEl.textContent = msg || "";
+    sheetStatusEl.classList.toggle("error", !!isError);
+  }
+
+  function openSheet(title, hint) {
+    sheetTitleEl.textContent = title;
+    sheetHintEl.textContent = hint;
+    sheetActionsEl.innerHTML = "";
+    setStatus("");
+    sheetEl.hidden = false;
+  }
+
+  function closeSheet() {
+    sheetEl.hidden = true;
+  }
+
+  // backup payload: { app, version, exported, items }
+  function buildBackup() {
+    return JSON.stringify(
+      {
+        app: "todo-pwa",
+        version: 1,
+        exported: new Date().toISOString(),
+        items: todos
+      },
+      null,
+      2
+    );
+  }
+
+  function pad(n) {
+    return n < 10 ? "0" + n : "" + n;
+  }
+
+  function backupFilename() {
+    const d = new Date();
+    return (
+      "todo-backup-" +
+      d.getFullYear() +
+      pad(d.getMonth() + 1) +
+      pad(d.getDate()) +
+      ".json"
+    );
+  }
+
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () {
+      URL.revokeObjectURL(url);
+    }, 1000);
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    // fallback for older browsers
+    return new Promise(function (resolve, reject) {
+      try {
+        sheetTextEl.removeAttribute("readonly");
+        sheetTextEl.focus();
+        sheetTextEl.select();
+        const ok = document.execCommand("copy");
+        ok ? resolve() : reject();
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  // returns {ok, added, total} or {ok:false, msg}
+  function importFromText(text, replace) {
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      return { ok: false, msg: "형식이 올바르지 않아요. 백업 코드 전체를 붙여넣었는지 확인해 주세요." };
+    }
+    const arr = Array.isArray(data)
+      ? data
+      : data && Array.isArray(data.items)
+      ? data.items
+      : null;
+    if (!arr) {
+      return { ok: false, msg: "백업 데이터를 찾을 수 없어요." };
+    }
+
+    const clean = [];
+    for (const raw of arr) {
+      if (!raw || typeof raw.text !== "string" || !raw.text.trim()) continue;
+      clean.push({
+        id: typeof raw.id === "string" && raw.id ? raw.id : uid(),
+        text: raw.text.trim().slice(0, 200),
+        done: !!raw.done,
+        created: typeof raw.created === "number" ? raw.created : Date.now()
+      });
+    }
+    if (!clean.length) {
+      return { ok: false, msg: "가져올 할일이 없어요." };
+    }
+
+    if (replace) {
+      todos = clean;
+      save();
+      render();
+      return { ok: true, added: clean.length, total: todos.length };
+    }
+
+    // merge: add items whose id isn't already present
+    const seen = new Set(todos.map((t) => t.id));
+    let added = 0;
+    for (const it of clean) {
+      if (!seen.has(it.id)) {
+        todos.push(it);
+        seen.add(it.id);
+        added++;
+      }
+    }
+    save();
+    render();
+    return { ok: true, added: added, total: todos.length };
+  }
+
+  function showExport() {
+    openSheet(
+      "백업 내보내기",
+      "아래 코드를 복사해 두거나 파일로 저장하세요. 다른 기기/주소의 '가져오기'에 붙여넣으면 그대로 복원됩니다."
+    );
+    sheetTextEl.value = buildBackup();
+    sheetTextEl.setAttribute("readonly", "readonly");
+
+    sheetActionsEl.append(
+      makeBtn("복사", "primary", function () {
+        copyText(sheetTextEl.value).then(
+          function () {
+            setStatus("백업 코드를 복사했어요 ✅", false);
+          },
+          function () {
+            setStatus("복사 실패 — 코드를 길게 눌러 직접 복사해 주세요.", true);
+          }
+        );
+      }),
+      makeBtn("파일로 저장", "", function () {
+        downloadText(backupFilename(), sheetTextEl.value);
+        setStatus("파일을 저장했어요 ✅", false);
+      }),
+      makeBtn("닫기", "", closeSheet)
+    );
+  }
+
+  function showImport() {
+    openSheet(
+      "백업 가져오기",
+      "백업 코드를 붙여넣거나 파일을 불러온 뒤, '합치기'(기존 유지 + 추가) 또는 '전체 교체'를 누르세요."
+    );
+    sheetTextEl.value = "";
+    sheetTextEl.removeAttribute("readonly");
+
+    sheetActionsEl.append(
+      makeBtn("파일 불러오기", "", function () {
+        fileInputEl.click();
+      }),
+      makeBtn("합치기", "primary", function () {
+        const r = importFromText(sheetTextEl.value, false);
+        if (!r.ok) return setStatus(r.msg, true);
+        setStatus(r.added + "개 추가됨 · 현재 " + r.total + "개 ✅", false);
+      }),
+      makeBtn("전체 교체", "danger", function () {
+        if (!window.confirm("현재 할일을 모두 지우고 백업 내용으로 교체할까요?")) return;
+        const r = importFromText(sheetTextEl.value, true);
+        if (!r.ok) return setStatus(r.msg, true);
+        setStatus("교체 완료 · 현재 " + r.total + "개 ✅", false);
+      }),
+      makeBtn("닫기", "", closeSheet)
+    );
+  }
+
+  document.getElementById("exportBtn").addEventListener("click", showExport);
+  document.getElementById("importBtn").addEventListener("click", showImport);
+
+  // file picker -> fill textarea
+  fileInputEl.addEventListener("change", function () {
+    const file = fileInputEl.files && fileInputEl.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      sheetTextEl.value = String(reader.result || "");
+      setStatus("파일을 불러왔어요. '합치기' 또는 '전체 교체'를 누르세요.", false);
+    };
+    reader.onerror = function () {
+      setStatus("파일을 읽지 못했어요.", true);
+    };
+    reader.readAsText(file);
+    fileInputEl.value = ""; // allow re-selecting the same file
+  });
+
+  // tap backdrop to dismiss
+  sheetEl.addEventListener("click", function (e) {
+    if (e.target === sheetEl) closeSheet();
   });
 
   /* ---------- Version label ---------- */

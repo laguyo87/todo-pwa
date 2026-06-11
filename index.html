@@ -15,8 +15,18 @@
 </head>
 <body>
   <header class="app-header">
-    <h1 class="app-title">할일</h1>
-    <p class="app-count" id="count">남은 할일 0개</p>
+    <div class="header-text">
+      <h1 class="app-title">할일</h1>
+      <p class="app-count" id="count">남은 할일 0개</p>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn" id="exportBtn" type="button" aria-label="백업 내보내기">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg>
+      </button>
+      <button class="icon-btn" id="importBtn" type="button" aria-label="백업 가져오기">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M8 7l4-4 4 4M5 21h14"/></svg>
+      </button>
+    </div>
   </header>
 
   <main class="app-main">
@@ -29,6 +39,19 @@
 
     <footer class="app-version" id="version">버전 확인 중…</footer>
   </main>
+
+  <div class="sheet-backdrop" id="sheet" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheet-grip"></div>
+      <h2 class="sheet-title" id="sheetTitle"></h2>
+      <p class="sheet-hint" id="sheetHint"></p>
+      <textarea class="sheet-text" id="sheetText" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+      <p class="sheet-status" id="sheetStatus" aria-live="polite"></p>
+      <div class="sheet-actions" id="sheetActions"></div>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" accept="application/json,.json" hidden />
 
   <form class="composer" id="form" autocomplete="off">
     <input
