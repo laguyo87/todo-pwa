@@ -1,5 +1,5 @@
-const CACHE = "todo-pwa-v1.3";
-const VERSION = CACHE.replace("todo-pwa-", ""); // "v1.3"
+const CACHE = "todo-pwa-v1.4";
+const VERSION = CACHE.replace("todo-pwa-", ""); // "v1.4"
 const ASSETS = [
   "./",
   "./index.html",
