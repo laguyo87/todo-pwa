@@ -142,8 +142,8 @@ body {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 16px 16px;
-  min-height: 60px;
+  padding: 9px 16px;
+  min-height: 48px;
   background: var(--surface);
   box-shadow: var(--shadow);
   border: 1px solid var(--border);
@@ -254,7 +254,8 @@ body {
   bottom: 0;
   display: flex;
   gap: 12px;
-  padding: 12px 16px calc(12px + var(--safe-bottom));
+  padding: 12px calc(16px + env(safe-area-inset-right, 0px))
+    calc(12px + var(--safe-bottom)) calc(16px + env(safe-area-inset-left, 0px));
   background: color-mix(in srgb, var(--bg) 86%, transparent);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
@@ -263,7 +264,8 @@ body {
 }
 
 .composer-input {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   height: 52px;
   padding: 0 18px;
   font-size: 17px;
