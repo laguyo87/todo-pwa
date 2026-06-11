@@ -2,6 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "todo.items.v1";
+  const APP_VERSION = "v3"; // 이 HTML/JS 묶음의 버전 (sw.js CACHE와 함께 올림)
 
   const listEl = document.getElementById("list");
   const emptyEl = document.getElementById("empty");
@@ -214,12 +215,48 @@
     inputEl.focus();
   });
 
-  /* ---------- Boot ---------- */
-  render();
+  /* ---------- Version label ---------- */
+  const versionEl = document.getElementById("version");
 
+  function showVersion(swVersion) {
+    // swVersion === null -> 서비스워커가 아직 페이지를 제어하지 않음
+    if (!swVersion) {
+      versionEl.textContent = "버전 " + APP_VERSION;
+      versionEl.classList.remove("stale");
+      return;
+    }
+    if (swVersion === APP_VERSION) {
+      versionEl.textContent = "버전 " + swVersion;
+      versionEl.classList.remove("stale");
+    } else {
+      // 화면(APP_VERSION)과 실제 동작 중인 서비스워커 버전이 다름 -> 재실행 필요
+      versionEl.textContent =
+        "버전 " + swVersion + " · 앱을 다시 열면 " + APP_VERSION + "로 갱신";
+      versionEl.classList.add("stale");
+    }
+  }
+
+  showVersion(null); // 우선 화면 버전 표시
+
+  /* ---------- Service worker ---------- */
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js").catch(function () {});
+    // 제어 중인 워커에게 실제 버전을 물어본다
+    function askVersion() {
+      const ctrl = navigator.serviceWorker.controller;
+      if (ctrl) ctrl.postMessage("version");
+    }
+    navigator.serviceWorker.addEventListener("message", function (e) {
+      if (e.data && e.data.type === "version") showVersion(e.data.version);
     });
+
+    window.addEventListener("load", function () {
+      navigator.serviceWorker
+        .register("sw.js")
+        .then(askVersion)
+        .catch(function () {});
+    });
+    // 새 워커가 제어권을 넘겨받으면 다시 물어본다
+    navigator.serviceWorker.addEventListener("controllerchange", askVersion);
+    askVersion();
   }
 })();

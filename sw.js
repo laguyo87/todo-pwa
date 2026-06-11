@@ -1,4 +1,5 @@
-const CACHE = "todo-pwa-v2";
+const CACHE = "todo-pwa-v3";
+const VERSION = CACHE.replace("todo-pwa-", ""); // "v3"
 const ASSETS = [
   "./",
   "./index.html",
@@ -25,6 +26,13 @@ self.addEventListener("activate", (event) => {
     )
   );
   self.clients.claim();
+});
+
+// Report the running version when the page asks
+self.addEventListener("message", (event) => {
+  if (event.data === "version" && event.source) {
+    event.source.postMessage({ type: "version", version: VERSION });
+  }
 });
 
 // Cache-first for app shell, with network fallback + runtime caching
