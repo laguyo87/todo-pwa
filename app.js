@@ -2,32 +2,57 @@
   "use strict";
 
   const STORAGE_KEY = "todo.items.v1";
-  const APP_VERSION = "v1.0"; // 이 HTML/JS 묶음의 버전 (sw.js CACHE와 함께 올림). 이후 0.1씩 증가
+  const APP_VERSION = "v1.1"; // app.js + sw.js(CACHE) 함께 올림. 이후 0.1씩 증가
 
   const listEl = document.getElementById("list");
   const emptyEl = document.getElementById("empty");
   const countEl = document.getElementById("count");
+  const filtersEl = document.getElementById("filters");
+  const bulkBarEl = document.getElementById("bulkBar");
   const formEl = document.getElementById("form");
   const inputEl = document.getElementById("input");
 
-  /** @type {{id:string, text:string, done:boolean, created:number}[]} */
+  /**
+   * @type {{id:string,text:string,done:boolean,created:number,completedAt:number|null,
+   *         due:number|null,category:string|null,order:number,notified:boolean}[]}
+   */
   let todos = load();
+  let activeFilter = "all"; // "all" | "today" | "overdue" | "cat:<name>"
+  let isDragging = false;
 
-  /* ---------- Persistence ---------- */
+  /* ===================== Persistence ===================== */
   function load() {
+    let raw;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : [];
+      raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
     } catch (e) {
-      return [];
+      raw = [];
     }
+    if (!Array.isArray(raw)) raw = [];
+    // 기존 데이터 마이그레이션 (없는 필드 채우기)
+    return raw.map(function (t, i) {
+      return {
+        id: t && t.id ? String(t.id) : uid(),
+        text: t && typeof t.text === "string" ? t.text : "",
+        done: !!(t && t.done),
+        created: t && typeof t.created === "number" ? t.created : Date.now() - i,
+        completedAt: t && typeof t.completedAt === "number" ? t.completedAt : null,
+        due: t && typeof t.due === "number" ? t.due : null,
+        category:
+          t && typeof t.category === "string" && t.category.trim()
+            ? t.category.trim()
+            : null,
+        order: t && typeof t.order === "number" ? t.order : i,
+        notified: !!(t && t.notified)
+      };
+    });
   }
 
   function save() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
     } catch (e) {
-      /* storage full or unavailable — ignore */
+      /* ignore */
     }
   }
 
@@ -35,29 +60,157 @@
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   }
 
-  /* ---------- Sorting: 미완료 먼저, 그 안에서 최신순 ---------- */
+  /* ===================== Helpers ===================== */
+  function categories() {
+    const set = [];
+    todos.forEach(function (t) {
+      if (t.category && set.indexOf(t.category) === -1) set.push(t.category);
+    });
+    return set.sort();
+  }
+
+  function topOrder() {
+    if (!todos.length) return 0;
+    return Math.min.apply(null, todos.map(function (t) { return t.order; })) - 1;
+  }
+
+  function dayBounds(ts) {
+    const d = new Date(ts);
+    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    return { start: start, end: start + 86400000 };
+  }
+
+  function isOverdue(t) {
+    return !t.done && t.due != null && t.due < Date.now();
+  }
+
+  function isDueToday(t) {
+    if (t.due == null) return false;
+    const b = dayBounds(Date.now());
+    return t.due >= b.start && t.due < b.end;
+  }
+
+  function pad(n) {
+    return n < 10 ? "0" + n : "" + n;
+  }
+
+  function fmtDue(ts) {
+    const d = new Date(ts);
+    const today = dayBounds(Date.now());
+    const time = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    if (ts >= today.start && ts < today.end) return "오늘 " + time;
+    if (ts >= today.end && ts < today.end + 86400000) return "내일 " + time;
+    if (ts >= today.start - 86400000 && ts < today.start) return "어제 " + time;
+    return d.getMonth() + 1 + "/" + d.getDate() + " " + time;
+  }
+
+  // ms -> "YYYY-MM-DDTHH:MM" (datetime-local 입력용, 로컬 시간)
+  function toLocalInput(ts) {
+    const d = new Date(ts);
+    return (
+      d.getFullYear() +
+      "-" + pad(d.getMonth() + 1) +
+      "-" + pad(d.getDate()) +
+      "T" + pad(d.getHours()) +
+      ":" + pad(d.getMinutes())
+    );
+  }
+
+  /* ===================== Sorting & filtering ===================== */
   function sorted() {
-    return todos.slice().sort((a, b) => {
+    return todos.slice().sort(function (a, b) {
       if (a.done !== b.done) return a.done ? 1 : -1;
-      return b.created - a.created;
+      if (a.done) return (b.completedAt || 0) - (a.completedAt || 0);
+      return a.order - b.order; // 미완료: 수동 정렬 순서
     });
   }
 
-  /* ---------- Rendering ---------- */
-  function render() {
-    listEl.innerHTML = "";
-
-    const items = sorted();
-    for (const todo of items) {
-      listEl.appendChild(buildItem(todo));
+  function matchesFilter(t) {
+    if (activeFilter === "all") return true;
+    if (activeFilter === "today") return !t.done && isDueToday(t);
+    if (activeFilter === "overdue") return isOverdue(t);
+    if (activeFilter.indexOf("cat:") === 0) {
+      return t.category === activeFilter.slice(4);
     }
+    return true;
+  }
 
-    const remaining = todos.filter((t) => !t.done).length;
-    countEl.textContent = "남은 할일 " + remaining + "개";
+  /* ===================== Rendering ===================== */
+  function render() {
+    if (isDragging) return; // 드래그 중에는 DOM을 직접 다루므로 재구성 생략
+    renderFilters();
+    renderList();
+    renderCounts();
+    renderBulk();
+  }
 
-    const isEmpty = todos.length === 0;
+  function renderCounts() {
+    const remaining = todos.filter(function (t) { return !t.done; }).length;
+    const overdue = todos.filter(isOverdue).length;
+    let txt = "남은 할일 " + remaining + "개";
+    if (overdue) txt += " · 지연 " + overdue;
+    countEl.textContent = txt;
+  }
+
+  function renderFilters() {
+    const cats = categories();
+    const todayN = todos.filter(function (t) { return !t.done && isDueToday(t); }).length;
+    const overdueN = todos.filter(isOverdue).length;
+
+    const chips = [{ key: "all", label: "전체" }];
+    if (overdueN) chips.push({ key: "overdue", label: "지연 " + overdueN });
+    if (todayN) chips.push({ key: "today", label: "오늘 " + todayN });
+    cats.forEach(function (c) { chips.push({ key: "cat:" + c, label: "#" + c }); });
+
+    // 현재 필터가 사라졌으면 전체로
+    if (!chips.some(function (c) { return c.key === activeFilter; })) activeFilter = "all";
+
+    filtersEl.innerHTML = "";
+    chips.forEach(function (c) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chip" + (c.key === activeFilter ? " active" : "");
+      if (c.key === "overdue") b.classList.add("danger");
+      b.textContent = c.label;
+      b.addEventListener("click", function () {
+        activeFilter = c.key;
+        render();
+      });
+      filtersEl.appendChild(b);
+    });
+    filtersEl.hidden = chips.length <= 1;
+  }
+
+  function renderList() {
+    listEl.innerHTML = "";
+    const items = sorted().filter(matchesFilter);
+    items.forEach(function (t) { listEl.appendChild(buildItem(t)); });
+
+    const isEmpty = items.length === 0;
     emptyEl.hidden = !isEmpty;
     listEl.hidden = isEmpty;
+  }
+
+  function renderBulk() {
+    const doneItems = todos.filter(function (t) { return t.done; });
+    if (!doneItems.length) {
+      bulkBarEl.hidden = true;
+      bulkBarEl.innerHTML = "";
+      return;
+    }
+    bulkBarEl.hidden = false;
+    bulkBarEl.innerHTML = "";
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "bulk-btn";
+    b.textContent = "완료한 항목 " + doneItems.length + "개 지우기";
+    b.addEventListener("click", function () {
+      if (!window.confirm("완료한 할일 " + doneItems.length + "개를 모두 지울까요?")) return;
+      todos = todos.filter(function (t) { return !t.done; });
+      save();
+      render();
+    });
+    bulkBarEl.appendChild(b);
   }
 
   function buildItem(todo) {
@@ -65,7 +218,6 @@
     li.className = "todo-item" + (todo.done ? " done" : "");
     li.dataset.id = todo.id;
 
-    // red layer revealed on swipe
     const trash = document.createElement("div");
     trash.className = "todo-trash";
     trash.innerHTML =
@@ -79,52 +231,97 @@
     check.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg>';
 
+    const main = document.createElement("div");
+    main.className = "todo-main";
+
     const text = document.createElement("span");
     text.className = "todo-text";
     text.textContent = todo.text;
+    main.appendChild(text);
 
-    const del = document.createElement("button");
-    del.className = "todo-delete";
-    del.type = "button";
-    del.setAttribute("aria-label", "삭제");
-    del.innerHTML =
-      '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
+    // 메타 칩 (마감일 / 카테고리)
+    if (todo.due != null || todo.category) {
+      const meta = document.createElement("div");
+      meta.className = "todo-meta";
+      if (todo.due != null) {
+        const due = document.createElement("span");
+        due.className =
+          "due-chip" +
+          (isOverdue(todo) ? " overdue" : isDueToday(todo) && !todo.done ? " today" : "");
+        due.textContent = "📅 " + fmtDue(todo.due);
+        meta.appendChild(due);
+      }
+      if (todo.category) {
+        const cat = document.createElement("span");
+        cat.className = "cat-chip";
+        cat.textContent = "#" + todo.category;
+        meta.appendChild(cat);
+      }
+      main.appendChild(meta);
+    }
 
-    row.append(check, text, del);
+    const edit = document.createElement("button");
+    edit.className = "todo-icon todo-edit";
+    edit.type = "button";
+    edit.setAttribute("aria-label", "편집");
+    edit.innerHTML =
+      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
+
+    const handle = document.createElement("button");
+    handle.className = "todo-icon todo-handle";
+    handle.type = "button";
+    handle.setAttribute("aria-label", "순서 변경");
+    handle.innerHTML =
+      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8h16M4 16h16"/></svg>';
+
+    row.append(check, main, edit, handle);
     li.append(trash, row);
 
-    // toggle done on tap (ignore taps that come from swipe or delete)
-    row.addEventListener("click", function (e) {
-      if (e.target.closest(".todo-delete")) return;
-      if (row.dataset.swiped === "1") {
-        row.dataset.swiped = "";
-        return;
-      }
+    // 체크박스/본문 탭 → 완료 토글 (스와이프/편집 제외)
+    function onTap(e) {
+      if (e.target.closest(".todo-icon")) return;
+      if (row.dataset.swiped === "1") { row.dataset.swiped = ""; return; }
       toggle(todo.id);
-    });
+    }
+    check.addEventListener("click", onTap);
+    main.addEventListener("click", onTap);
 
-    del.addEventListener("click", function (e) {
+    edit.addEventListener("click", function (e) {
       e.stopPropagation();
-      remove(todo.id, li);
+      openEdit(todo.id);
     });
 
     enableSwipe(row, li, todo.id);
+    if (!todo.done) enableDrag(handle, li);
+    else handle.classList.add("hidden");
+
     return li;
   }
 
-  /* ---------- Actions ---------- */
+  /* ===================== Actions ===================== */
   function add(textRaw) {
     const text = textRaw.trim();
     if (!text) return;
-    todos.push({ id: uid(), text: text, done: false, created: Date.now() });
+    todos.push({
+      id: uid(),
+      text: text,
+      done: false,
+      created: Date.now(),
+      completedAt: null,
+      due: null,
+      category: activeFilter.indexOf("cat:") === 0 ? activeFilter.slice(4) : null,
+      order: topOrder(),
+      notified: false
+    });
     save();
     render();
   }
 
   function toggle(id) {
-    const t = todos.find((x) => x.id === id);
+    const t = find(id);
     if (!t) return;
     t.done = !t.done;
+    t.completedAt = t.done ? Date.now() : null;
     save();
     render();
   }
@@ -132,98 +329,135 @@
   function remove(id, li) {
     li.classList.add("removing");
     const finish = function () {
-      todos = todos.filter((x) => x.id !== id);
+      todos = todos.filter(function (x) { return x.id !== id; });
       save();
       render();
     };
     li.addEventListener("animationend", finish, { once: true });
-    // fallback in case animationend doesn't fire
     setTimeout(finish, 350);
   }
 
-  /* ---------- Swipe-to-delete ---------- */
+  function find(id) {
+    return todos.find(function (x) { return x.id === id; });
+  }
+
+  /* ===================== Swipe to delete ===================== */
   function enableSwipe(row, li, id) {
-    let startX = 0;
-    let startY = 0;
-    let dx = 0;
-    let dragging = false;
-    let decided = false;
-    const THRESHOLD = 90; // px to trigger delete
+    let startX = 0, startY = 0, dx = 0, dragging = false, decided = false;
+    const THRESHOLD = 90;
 
-    row.addEventListener(
-      "touchstart",
-      function (e) {
-        const t = e.touches[0];
-        startX = t.clientX;
-        startY = t.clientY;
-        dx = 0;
-        dragging = true;
-        decided = false;
-        row.style.transition = "none";
-      },
-      { passive: true }
-    );
+    row.addEventListener("touchstart", function (e) {
+      const t = e.touches[0];
+      startX = t.clientX; startY = t.clientY; dx = 0;
+      dragging = true; decided = false;
+      row.style.transition = "none";
+    }, { passive: true });
 
-    row.addEventListener(
-      "touchmove",
-      function (e) {
-        if (!dragging) return;
-        const t = e.touches[0];
-        const moveX = t.clientX - startX;
-        const moveY = t.clientY - startY;
-
-        if (!decided) {
-          if (Math.abs(moveX) < 8 && Math.abs(moveY) < 8) return;
-          // vertical intent -> let the page scroll, cancel swipe
-          if (Math.abs(moveY) > Math.abs(moveX)) {
-            dragging = false;
-            row.style.transition = "";
-            return;
-          }
-          decided = true;
-        }
-
-        dx = Math.min(0, moveX); // only allow swiping left
-        row.style.transform = "translateX(" + dx + "px)";
-      },
-      { passive: true }
-    );
+    row.addEventListener("touchmove", function (e) {
+      if (!dragging) return;
+      const t = e.touches[0];
+      const mx = t.clientX - startX, my = t.clientY - startY;
+      if (!decided) {
+        if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+        if (Math.abs(my) > Math.abs(mx)) { dragging = false; row.style.transition = ""; return; }
+        decided = true;
+      }
+      dx = Math.min(0, mx);
+      row.style.transform = "translateX(" + dx + "px)";
+    }, { passive: true });
 
     function end() {
       if (!dragging) return;
       dragging = false;
       row.style.transition = "";
-
       if (dx <= -THRESHOLD) {
         row.dataset.swiped = "1";
         remove(id, li);
       } else {
         row.style.transform = "";
-        if (Math.abs(dx) > 8) row.dataset.swiped = "1"; // suppress the click
+        if (Math.abs(dx) > 8) row.dataset.swiped = "1";
       }
     }
-
     row.addEventListener("touchend", end, { passive: true });
     row.addEventListener("touchcancel", end, { passive: true });
   }
 
-  /* ---------- Form ---------- */
-  formEl.addEventListener("submit", function (e) {
-    e.preventDefault();
-    add(inputEl.value);
-    inputEl.value = "";
-    inputEl.focus();
-  });
+  /* ===================== Drag reorder (pointer) ===================== */
+  function enableDrag(handle, li) {
+    // 핸들 터치가 카드 스와이프(삭제)로 번지지 않게 차단
+    handle.addEventListener("touchstart", function (e) { e.stopPropagation(); }, { passive: true });
+    handle.addEventListener("pointerdown", function (e) {
+      if (e.button != null && e.button > 0) return;
+      e.preventDefault();
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      isDragging = true;
+      li.classList.add("dragging");
 
-  /* ---------- Backup: export / import ---------- */
+      function move(ev) {
+        const y = ev.clientY;
+        const sibs = Array.prototype.slice
+          .call(listEl.querySelectorAll(".todo-item:not(.done)"))
+          .filter(function (x) { return x !== li; });
+        let placed = false;
+        for (let i = 0; i < sibs.length; i++) {
+          const r = sibs[i].getBoundingClientRect();
+          if (y < r.top + r.height / 2) {
+            if (sibs[i].previousElementSibling !== li) listEl.insertBefore(li, sibs[i]);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed && sibs.length) {
+          const last = sibs[sibs.length - 1];
+          if (last.nextElementSibling !== li) listEl.insertBefore(li, last.nextElementSibling);
+        }
+      }
+
+      function up(ev) {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+        try { handle.releasePointerCapture(ev.pointerId); } catch (err) {}
+        li.classList.remove("dragging");
+        // 현재 DOM 순서대로 order 재배정
+        const ids = Array.prototype.slice
+          .call(listEl.querySelectorAll(".todo-item:not(.done)"))
+          .map(function (x) { return x.dataset.id; });
+        ids.forEach(function (id, idx) {
+          const t = find(id);
+          if (t) t.order = idx;
+        });
+        save();
+        isDragging = false;
+        render();
+      }
+
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+      handle.addEventListener("pointercancel", up);
+    });
+  }
+
+  /* ===================== Bottom sheet ===================== */
   const sheetEl = document.getElementById("sheet");
   const sheetTitleEl = document.getElementById("sheetTitle");
-  const sheetHintEl = document.getElementById("sheetHint");
-  const sheetTextEl = document.getElementById("sheetText");
+  const sheetBodyEl = document.getElementById("sheetBody");
   const sheetStatusEl = document.getElementById("sheetStatus");
   const sheetActionsEl = document.getElementById("sheetActions");
   const fileInputEl = document.getElementById("fileInput");
 
+  function openSheet(title) {
+    sheetTitleEl.textContent = title;
+    sheetBodyEl.innerHTML = "";
+    sheetActionsEl.innerHTML = "";
+    setStatus("");
+    sheetEl.hidden = false;
+  }
+  function closeSheet() { sheetEl.hidden = true; }
+  function setStatus(msg, isError) {
+    sheetStatusEl.textContent = msg || "";
+    sheetStatusEl.classList.toggle("error", !!isError);
+  }
   function makeBtn(label, cls, onClick) {
     const b = document.createElement("button");
     b.type = "button";
@@ -232,159 +466,213 @@
     b.addEventListener("click", onClick);
     return b;
   }
-
-  function setStatus(msg, isError) {
-    sheetStatusEl.textContent = msg || "";
-    sheetStatusEl.classList.toggle("error", !!isError);
+  function field(labelText, control) {
+    const wrap = document.createElement("label");
+    wrap.className = "field";
+    const span = document.createElement("span");
+    span.className = "field-label";
+    span.textContent = labelText;
+    wrap.append(span, control);
+    return wrap;
   }
 
-  function openSheet(title, hint) {
-    sheetTitleEl.textContent = title;
-    sheetHintEl.textContent = hint;
-    sheetActionsEl.innerHTML = "";
-    setStatus("");
-    sheetEl.hidden = false;
+  sheetEl.addEventListener("click", function (e) {
+    if (e.target === sheetEl) closeSheet();
+  });
+
+  /* ---------- Edit sheet ---------- */
+  function openEdit(id) {
+    const t = find(id);
+    if (!t) return;
+    openSheet("할일 편집");
+
+    const textInput = document.createElement("input");
+    textInput.type = "text";
+    textInput.className = "field-input";
+    textInput.maxLength = 200;
+    textInput.value = t.text;
+
+    const dueInput = document.createElement("input");
+    dueInput.type = "datetime-local";
+    dueInput.className = "field-input";
+    if (t.due != null) dueInput.value = toLocalInput(t.due);
+
+    const clearDue = makeBtn("마감일 지우기", "small", function () {
+      dueInput.value = "";
+    });
+
+    const catInput = document.createElement("input");
+    catInput.type = "text";
+    catInput.className = "field-input";
+    catInput.maxLength = 20;
+    catInput.placeholder = "예: 업무, 집안일";
+    catInput.setAttribute("list", "catList");
+    if (t.category) catInput.value = t.category;
+    const dl = document.createElement("datalist");
+    dl.id = "catList";
+    categories().forEach(function (c) {
+      const o = document.createElement("option");
+      o.value = c;
+      dl.appendChild(o);
+    });
+
+    const dueRow = document.createElement("div");
+    dueRow.className = "field-inline";
+    dueRow.append(dueInput, clearDue);
+
+    sheetBodyEl.append(
+      field("내용", textInput),
+      field("마감일", dueRow),
+      field("카테고리", catInput),
+      dl
+    );
+
+    sheetActionsEl.append(
+      makeBtn("저장", "primary", function () {
+        const newText = textInput.value.trim();
+        if (!newText) { setStatus("내용을 입력해 주세요.", true); return; }
+        t.text = newText.slice(0, 200);
+        const newDue = dueInput.value ? new Date(dueInput.value).getTime() : null;
+        if (newDue !== t.due) t.notified = false; // 마감 변경 시 알림 재무장
+        t.due = isNaN(newDue) ? null : newDue;
+        t.category = catInput.value.trim().slice(0, 20) || null;
+        save();
+        render();
+        closeSheet();
+        if (t.due != null && t.due > Date.now()) ensureNotifyPermission();
+      }),
+      makeBtn("삭제", "danger", function () {
+        if (!window.confirm("이 할일을 삭제할까요?")) return;
+        todos = todos.filter(function (x) { return x.id !== id; });
+        save();
+        render();
+        closeSheet();
+      }),
+      makeBtn("닫기", "", closeSheet)
+    );
   }
 
-  function closeSheet() {
-    sheetEl.hidden = true;
+  /* ---------- Stats sheet ---------- */
+  function openStats() {
+    openSheet("통계");
+    const total = todos.length;
+    const done = todos.filter(function (t) { return t.done; }).length;
+    const remaining = total - done;
+    const overdue = todos.filter(isOverdue).length;
+    const today = todos.filter(function (t) { return !t.done && isDueToday(t); }).length;
+    const rate = total ? Math.round((done / total) * 100) : 0;
+
+    const grid = document.createElement("div");
+    grid.className = "stat-grid";
+    [
+      ["전체", total],
+      ["완료", done],
+      ["남음", remaining],
+      ["오늘 마감", today],
+      ["지연", overdue],
+      ["완료율", rate + "%"]
+    ].forEach(function (s) {
+      const cell = document.createElement("div");
+      cell.className = "stat-cell";
+      cell.innerHTML =
+        '<div class="stat-num">' + s[1] + "</div><div class=\"stat-label\">" + s[0] + "</div>";
+      grid.appendChild(cell);
+    });
+
+    const bar = document.createElement("div");
+    bar.className = "stat-bar";
+    bar.innerHTML = '<div class="stat-bar-fill" style="width:' + rate + '%"></div>';
+
+    sheetBodyEl.append(grid, bar);
+
+    // 카테고리별
+    const cats = categories();
+    if (cats.length) {
+      const catWrap = document.createElement("div");
+      catWrap.className = "stat-cats";
+      cats.forEach(function (c) {
+        const items = todos.filter(function (t) { return t.category === c; });
+        const left = items.filter(function (t) { return !t.done; }).length;
+        const line = document.createElement("div");
+        line.className = "stat-cat-line";
+        line.innerHTML =
+          "<span>#" + c + "</span><span>남음 " + left + " / " + items.length + "</span>";
+        catWrap.appendChild(line);
+      });
+      sheetBodyEl.appendChild(catWrap);
+    }
+
+    const actions = [];
+    if ("Notification" in window && Notification.permission !== "granted") {
+      actions.push(
+        makeBtn("알림 켜기", "primary", function () {
+          ensureNotifyPermission(function (ok) {
+            setStatus(ok ? "알림이 켜졌어요 ✅" : "알림이 거부되었어요.", !ok);
+          });
+        })
+      );
+    }
+    actions.push(makeBtn("닫기", "", closeSheet));
+    sheetActionsEl.append.apply(sheetActionsEl, actions);
   }
 
-  // backup payload: { app, version, exported, items }
+  /* ---------- Backup sheets ---------- */
   function buildBackup() {
     return JSON.stringify(
-      {
-        app: "todo-pwa",
-        version: 1,
-        exported: new Date().toISOString(),
-        items: todos
-      },
+      { app: "todo-pwa", version: 2, exported: new Date().toISOString(), items: todos },
       null,
       2
     );
   }
-
-  function pad(n) {
-    return n < 10 ? "0" + n : "" + n;
-  }
-
   function backupFilename() {
     const d = new Date();
-    return (
-      "todo-backup-" +
-      d.getFullYear() +
-      pad(d.getMonth() + 1) +
-      pad(d.getDate()) +
-      ".json"
-    );
+    return "todo-backup-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + ".json";
   }
-
   function downloadText(filename, text) {
     const blob = new Blob([text], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(function () {
-      URL.revokeObjectURL(url);
-    }, 1000);
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
-
-  function copyText(text) {
+  function makeBackupTextarea(value, readonly) {
+    const ta = document.createElement("textarea");
+    ta.className = "sheet-text";
+    ta.spellcheck = false;
+    ta.value = value;
+    if (readonly) ta.setAttribute("readonly", "readonly");
+    return ta;
+  }
+  function copyText(text, ta) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       return navigator.clipboard.writeText(text);
     }
-    // fallback for older browsers
     return new Promise(function (resolve, reject) {
       try {
-        sheetTextEl.removeAttribute("readonly");
-        sheetTextEl.focus();
-        sheetTextEl.select();
-        const ok = document.execCommand("copy");
-        ok ? resolve() : reject();
-      } catch (e) {
-        reject(e);
-      }
+        ta.removeAttribute("readonly"); ta.focus(); ta.select();
+        document.execCommand("copy") ? resolve() : reject();
+      } catch (e) { reject(e); }
     });
   }
 
-  // returns {ok, added, total} or {ok:false, msg}
-  function importFromText(text, replace) {
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (e) {
-      return { ok: false, msg: "형식이 올바르지 않아요. 백업 코드 전체를 붙여넣었는지 확인해 주세요." };
-    }
-    const arr = Array.isArray(data)
-      ? data
-      : data && Array.isArray(data.items)
-      ? data.items
-      : null;
-    if (!arr) {
-      return { ok: false, msg: "백업 데이터를 찾을 수 없어요." };
-    }
-
-    const clean = [];
-    for (const raw of arr) {
-      if (!raw || typeof raw.text !== "string" || !raw.text.trim()) continue;
-      clean.push({
-        id: typeof raw.id === "string" && raw.id ? raw.id : uid(),
-        text: raw.text.trim().slice(0, 200),
-        done: !!raw.done,
-        created: typeof raw.created === "number" ? raw.created : Date.now()
-      });
-    }
-    if (!clean.length) {
-      return { ok: false, msg: "가져올 할일이 없어요." };
-    }
-
-    if (replace) {
-      todos = clean;
-      save();
-      render();
-      return { ok: true, added: clean.length, total: todos.length };
-    }
-
-    // merge: add items whose id isn't already present
-    const seen = new Set(todos.map((t) => t.id));
-    let added = 0;
-    for (const it of clean) {
-      if (!seen.has(it.id)) {
-        todos.push(it);
-        seen.add(it.id);
-        added++;
-      }
-    }
-    save();
-    render();
-    return { ok: true, added: added, total: todos.length };
-  }
-
   function showExport() {
-    openSheet(
-      "백업 내보내기",
-      "아래 코드를 복사해 두거나 파일로 저장하세요. 다른 기기/주소의 '가져오기'에 붙여넣으면 그대로 복원됩니다."
-    );
-    sheetTextEl.value = buildBackup();
-    sheetTextEl.setAttribute("readonly", "readonly");
-
+    openSheet("백업 내보내기");
+    const hint = document.createElement("p");
+    hint.className = "sheet-hint";
+    hint.textContent =
+      "아래 코드를 복사하거나 파일로 저장하세요. 다른 기기/주소의 '가져오기'에 넣으면 그대로 복원됩니다.";
+    const ta = makeBackupTextarea(buildBackup(), true);
+    sheetBodyEl.append(hint, ta);
     sheetActionsEl.append(
       makeBtn("복사", "primary", function () {
-        copyText(sheetTextEl.value).then(
-          function () {
-            setStatus("백업 코드를 복사했어요 ✅", false);
-          },
-          function () {
-            setStatus("복사 실패 — 코드를 길게 눌러 직접 복사해 주세요.", true);
-          }
+        copyText(ta.value, ta).then(
+          function () { setStatus("백업 코드를 복사했어요 ✅", false); },
+          function () { setStatus("복사 실패 — 코드를 길게 눌러 복사해 주세요.", true); }
         );
       }),
       makeBtn("파일로 저장", "", function () {
-        downloadText(backupFilename(), sheetTextEl.value);
+        downloadText(backupFilename(), ta.value);
         setStatus("파일을 저장했어요 ✅", false);
       }),
       makeBtn("닫기", "", closeSheet)
@@ -392,25 +680,37 @@
   }
 
   function showImport() {
-    openSheet(
-      "백업 가져오기",
-      "백업 코드를 붙여넣거나 파일을 불러온 뒤, '합치기'(기존 유지 + 추가) 또는 '전체 교체'를 누르세요."
-    );
-    sheetTextEl.value = "";
-    sheetTextEl.removeAttribute("readonly");
+    openSheet("백업 가져오기");
+    const hint = document.createElement("p");
+    hint.className = "sheet-hint";
+    hint.textContent =
+      "백업 코드를 붙여넣거나 파일을 불러온 뒤, '합치기'(기존 유지+추가) 또는 '전체 교체'를 누르세요.";
+    const ta = makeBackupTextarea("", false);
+    sheetBodyEl.append(hint, ta);
+
+    fileInputEl.onchange = function () {
+      const file = fileInputEl.files && fileInputEl.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function () {
+        ta.value = String(reader.result || "");
+        setStatus("파일을 불러왔어요. '합치기' 또는 '전체 교체'를 누르세요.", false);
+      };
+      reader.onerror = function () { setStatus("파일을 읽지 못했어요.", true); };
+      reader.readAsText(file);
+      fileInputEl.value = "";
+    };
 
     sheetActionsEl.append(
-      makeBtn("파일 불러오기", "", function () {
-        fileInputEl.click();
-      }),
+      makeBtn("파일 불러오기", "", function () { fileInputEl.click(); }),
       makeBtn("합치기", "primary", function () {
-        const r = importFromText(sheetTextEl.value, false);
+        const r = importFromText(ta.value, false);
         if (!r.ok) return setStatus(r.msg, true);
         setStatus(r.added + "개 추가됨 · 현재 " + r.total + "개 ✅", false);
       }),
       makeBtn("전체 교체", "danger", function () {
         if (!window.confirm("현재 할일을 모두 지우고 백업 내용으로 교체할까요?")) return;
-        const r = importFromText(sheetTextEl.value, true);
+        const r = importFromText(ta.value, true);
         if (!r.ok) return setStatus(r.msg, true);
         setStatus("교체 완료 · 현재 " + r.total + "개 ✅", false);
       }),
@@ -418,35 +718,90 @@
     );
   }
 
+  function importFromText(text, replace) {
+    let data;
+    try { data = JSON.parse(text); }
+    catch (e) { return { ok: false, msg: "형식이 올바르지 않아요. 백업 코드 전체를 넣었는지 확인해 주세요." }; }
+    const arr = Array.isArray(data) ? data : data && Array.isArray(data.items) ? data.items : null;
+    if (!arr) return { ok: false, msg: "백업 데이터를 찾을 수 없어요." };
+
+    let ord = topOrder();
+    const clean = [];
+    arr.forEach(function (raw) {
+      if (!raw || typeof raw.text !== "string" || !raw.text.trim()) return;
+      clean.push({
+        id: typeof raw.id === "string" && raw.id ? raw.id : uid(),
+        text: raw.text.trim().slice(0, 200),
+        done: !!raw.done,
+        created: typeof raw.created === "number" ? raw.created : Date.now(),
+        completedAt: typeof raw.completedAt === "number" ? raw.completedAt : null,
+        due: typeof raw.due === "number" ? raw.due : null,
+        category:
+          typeof raw.category === "string" && raw.category.trim()
+            ? raw.category.trim().slice(0, 20)
+            : null,
+        order: typeof raw.order === "number" ? raw.order : ord++,
+        notified: !!raw.notified
+      });
+    });
+    if (!clean.length) return { ok: false, msg: "가져올 할일이 없어요." };
+
+    if (replace) {
+      todos = clean;
+      save(); render();
+      return { ok: true, added: clean.length, total: todos.length };
+    }
+    const seen = {};
+    todos.forEach(function (t) { seen[t.id] = true; });
+    let added = 0;
+    clean.forEach(function (it) {
+      if (!seen[it.id]) { todos.push(it); seen[it.id] = true; added++; }
+    });
+    save(); render();
+    return { ok: true, added: added, total: todos.length };
+  }
+
+  /* ===================== Reminders / notifications ===================== */
+  function ensureNotifyPermission(cb) {
+    if (!("Notification" in window)) { if (cb) cb(false); return; }
+    if (Notification.permission === "granted") { if (cb) cb(true); return; }
+    if (Notification.permission === "denied") { if (cb) cb(false); return; }
+    Notification.requestPermission().then(function (p) {
+      if (cb) cb(p === "granted");
+    });
+  }
+
+  function checkReminders() {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const now = Date.now();
+    let changed = false;
+    todos.forEach(function (t) {
+      if (!t.done && t.due != null && t.due <= now && !t.notified) {
+        try {
+          new Notification("⏰ 마감된 할일", { body: t.text, tag: "todo-" + t.id });
+        } catch (e) {}
+        t.notified = true;
+        changed = true;
+      }
+    });
+    if (changed) { save(); if (!isDragging) renderCounts(); }
+  }
+
+  /* ===================== Header buttons & composer ===================== */
+  document.getElementById("statsBtn").addEventListener("click", openStats);
   document.getElementById("exportBtn").addEventListener("click", showExport);
   document.getElementById("importBtn").addEventListener("click", showImport);
 
-  // file picker -> fill textarea
-  fileInputEl.addEventListener("change", function () {
-    const file = fileInputEl.files && fileInputEl.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function () {
-      sheetTextEl.value = String(reader.result || "");
-      setStatus("파일을 불러왔어요. '합치기' 또는 '전체 교체'를 누르세요.", false);
-    };
-    reader.onerror = function () {
-      setStatus("파일을 읽지 못했어요.", true);
-    };
-    reader.readAsText(file);
-    fileInputEl.value = ""; // allow re-selecting the same file
+  formEl.addEventListener("submit", function (e) {
+    e.preventDefault();
+    add(inputEl.value);
+    inputEl.value = "";
+    inputEl.focus();
   });
 
-  // tap backdrop to dismiss
-  sheetEl.addEventListener("click", function (e) {
-    if (e.target === sheetEl) closeSheet();
-  });
-
-  /* ---------- Version label ---------- */
+  /* ===================== Version label ===================== */
   const versionEl = document.getElementById("version");
-
   function showVersion(swVersion) {
-    // swVersion === null -> 서비스워커가 아직 페이지를 제어하지 않음
     if (!swVersion) {
       versionEl.textContent = "버전 " + APP_VERSION;
       versionEl.classList.remove("stale");
@@ -456,16 +811,21 @@
       versionEl.textContent = "버전 " + swVersion;
       versionEl.classList.remove("stale");
     } else {
-      // 화면(APP_VERSION)과 실제 동작 중인 서비스워커 버전이 다름 -> 재실행 필요
-      versionEl.textContent =
-        "버전 " + swVersion + " · 앱을 다시 열면 " + APP_VERSION + "로 갱신";
+      versionEl.textContent = "버전 " + swVersion + " · 앱을 다시 열면 " + APP_VERSION + "로 갱신";
       versionEl.classList.add("stale");
     }
   }
 
-  showVersion(null); // 우선 화면 버전 표시
+  /* ===================== Boot ===================== */
+  render();
+  showVersion(null);
+  checkReminders();
+  setInterval(checkReminders, 30000);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") { checkReminders(); render(); }
+  });
 
-  /* ---------- Service worker + 업데이트 알림 ---------- */
+  /* ===================== Service worker + 업데이트 알림 ===================== */
   const updateBtn = document.getElementById("updateBtn");
   const updateLabel = updateBtn ? updateBtn.querySelector(".update-label") : null;
   let waitingWorker = null;
@@ -474,8 +834,6 @@
     const ctrl = navigator.serviceWorker.controller;
     if (ctrl) ctrl.postMessage("version");
   }
-
-  // 새 버전이 설치되어 대기 중일 때 알림 버튼을 띄운다
   function offerUpdate(worker) {
     if (!worker) return;
     waitingWorker = worker;
@@ -488,15 +846,12 @@
       updateBtn.disabled = true;
       updateBtn.classList.add("loading");
       if (updateLabel) updateLabel.textContent = "업데이트 중…";
-      // 새 워커가 제어권을 잡는 순간 새로고침해서 새 버전을 로드한다
       navigator.serviceWorker.addEventListener(
         "controllerchange",
-        function () {
-          window.location.reload();
-        },
+        function () { window.location.reload(); },
         { once: true }
       );
-      waitingWorker.postMessage("skipWaiting"); // 대기 워커 즉시 활성화 요청
+      waitingWorker.postMessage("skipWaiting");
     });
   }
 
@@ -504,38 +859,21 @@
     navigator.serviceWorker.addEventListener("message", function (e) {
       if (e.data && e.data.type === "version") showVersion(e.data.version);
     });
-
     window.addEventListener("load", function () {
-      navigator.serviceWorker
-        .register("sw.js")
-        .then(function (reg) {
-          askVersion();
-
-          // 이미 설치돼 대기 중인 새 워커가 있으면 즉시 안내
-          if (reg.waiting && navigator.serviceWorker.controller) {
-            offerUpdate(reg.waiting);
-          }
-
-          // 새 워커가 설치되는 것을 감지
-          reg.addEventListener("updatefound", function () {
-            const nw = reg.installing;
-            if (!nw) return;
-            nw.addEventListener("statechange", function () {
-              // 설치 완료 + 기존 제어 워커 존재 = 업데이트 대기 상태
-              if (nw.state === "installed" && navigator.serviceWorker.controller) {
-                offerUpdate(nw);
-              }
-            });
+      navigator.serviceWorker.register("sw.js").then(function (reg) {
+        askVersion();
+        if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
+        reg.addEventListener("updatefound", function () {
+          const nw = reg.installing;
+          if (!nw) return;
+          nw.addEventListener("statechange", function () {
+            if (nw.state === "installed" && navigator.serviceWorker.controller) offerUpdate(nw);
           });
-
-          // 앱을 다시 볼 때마다 서버에 새 버전이 있는지 확인
-          document.addEventListener("visibilitychange", function () {
-            if (document.visibilityState === "visible") {
-              reg.update().catch(function () {});
-            }
-          });
-        })
-        .catch(function () {});
+        });
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "visible") reg.update().catch(function () {});
+        });
+      }).catch(function () {});
     });
   }
 })();

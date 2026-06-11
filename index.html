@@ -25,6 +25,9 @@
       <p class="app-count" id="count">남은 할일 0개</p>
     </div>
     <div class="header-actions">
+      <button class="icon-btn" id="statsBtn" type="button" aria-label="통계">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V9M12 21V4M19 21v-7"/></svg>
+      </button>
       <button class="icon-btn" id="exportBtn" type="button" aria-label="백업 내보내기">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg>
       </button>
@@ -34,6 +37,8 @@
     </div>
   </header>
 
+  <nav class="filters" id="filters" aria-label="필터"></nav>
+
   <main class="app-main">
     <ul class="todo-list" id="list"></ul>
     <div class="empty-state" id="empty" hidden>
@@ -42,15 +47,17 @@
       <span>아래에서 새 할일을 추가해 보세요</span>
     </div>
 
+    <div class="bulk-bar" id="bulkBar" hidden></div>
+
     <footer class="app-version" id="version">버전 확인 중…</footer>
   </main>
 
+  <!-- 공용 바텀시트 (편집 / 통계 / 백업) -->
   <div class="sheet-backdrop" id="sheet" hidden>
     <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
       <div class="sheet-grip"></div>
       <h2 class="sheet-title" id="sheetTitle"></h2>
-      <p class="sheet-hint" id="sheetHint"></p>
-      <textarea class="sheet-text" id="sheetText" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+      <div class="sheet-body" id="sheetBody"></div>
       <p class="sheet-status" id="sheetStatus" aria-live="polite"></p>
       <div class="sheet-actions" id="sheetActions"></div>
     </div>
